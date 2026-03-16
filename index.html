@@ -59,6 +59,12 @@
       <div class="topbar-title" id="topbar-period"></div>
     </div>
     <div class="topbar-right">
+      <!-- VIEW SWITCHER -->
+      <div id="view-switcher-wrap" class="vsw-wrap">
+        <button class="vsw-btn active" data-view="week">Sem</button>
+        <button class="vsw-btn" data-view="month">Mes</button>
+        <button class="vsw-btn" data-view="year">Año</button>
+      </div>
       <button class="icon-btn" id="notif-btn">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
@@ -114,61 +120,51 @@
 
     <!-- ── SECCIÓN: JUNTOS ── -->
     <section id="section-together" class="section active">
-      <!-- Week navigation -->
-      <div class="week-nav">
-        <button class="week-nav-btn" id="together-prev">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
-        </button>
-        <div class="week-nav-label" id="together-week-label"></div>
-        <button class="week-nav-btn" id="together-next">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-        </button>
-        <button class="today-chip" id="together-today">Hoy</button>
+      <div class="cal-controls">
+        <div class="week-nav">
+          <button class="week-nav-btn" id="together-prev">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <div class="week-nav-label" id="together-week-label"></div>
+          <button class="week-nav-btn" id="together-next">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <button class="today-chip" id="together-today">Hoy</button>
+        </div>
+        <div class="legend-bar">
+          <div class="legend-item juan-color"><span class="dot"></span>Juan</div>
+          <div class="legend-item greisi-color"><span class="dot"></span>Greisi</div>
+          <div class="legend-item free-color"><span class="dot"></span>Libres</div>
+        </div>
       </div>
-
-      <!-- Day selector strip -->
-      <div class="day-strip" id="together-day-strip"></div>
-
-      <!-- Legend -->
-      <div class="legend-bar">
-        <div class="legend-item juan-color"><span class="dot"></span>Juan</div>
-        <div class="legend-item greisi-color"><span class="dot"></span>Greisi</div>
-        <div class="legend-item both-color"><span class="dot"></span>Ambos</div>
-        <div class="legend-item free-color"><span class="dot"></span>Libres</div>
-      </div>
-
-      <!-- Time grid -->
-      <div class="time-grid-wrapper">
-        <div class="time-grid" id="together-grid"></div>
+      <div class="cal-body">
+        <div id="together-grid"></div>
       </div>
     </section>
 
     <!-- ── SECCIÓN: MI HORARIO ── -->
     <section id="section-my-schedule" class="section hidden">
-      <div class="section-header">
-        <h2 class="section-title">Mi horario</h2>
-        <button class="fab-inline" id="add-block-btn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          Agregar
-        </button>
+      <div class="cal-controls">
+        <div class="week-nav">
+          <button class="week-nav-btn" id="my-prev">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <div class="week-nav-label" id="my-week-label"></div>
+          <button class="week-nav-btn" id="my-next">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+          <button class="today-chip" id="my-today">Hoy</button>
+        </div>
+        <div class="section-header" style="padding:0 16px 8px">
+          <h2 class="section-title">Mi horario</h2>
+          <button class="fab-inline" id="add-block-btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Agregar
+          </button>
+        </div>
       </div>
-
-      <!-- Week nav -->
-      <div class="week-nav">
-        <button class="week-nav-btn" id="my-prev">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
-        </button>
-        <div class="week-nav-label" id="my-week-label"></div>
-        <button class="week-nav-btn" id="my-next">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
-        </button>
-        <button class="today-chip" id="my-today">Hoy</button>
-      </div>
-
-      <div class="day-strip" id="my-day-strip"></div>
-
-      <div class="time-grid-wrapper">
-        <div class="time-grid" id="my-grid"></div>
+      <div class="cal-body">
+        <div id="my-grid"></div>
       </div>
     </section>
 
@@ -177,7 +173,7 @@
       <div class="section-header">
         <h2 class="section-title">Planes y citas</h2>
         <button class="fab-inline" id="add-event-btn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
           Nuevo
         </button>
       </div>
@@ -195,14 +191,13 @@
 
   </main>
 
-  <!-- FAB para agregar en juntos/mi-horario -->
-  <button class="fab" id="fab-add" title="Agregar">
+  <button class="fab" id="fab-add" title="Agregar bloque">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
   </button>
 
 </div><!-- #app -->
 
-<!-- ── MODAL: BLOQUE DE HORARIO ── -->
+<!-- ── MODAL: BLOQUE ── -->
 <div class="modal-overlay hidden" id="block-modal">
   <div class="modal-sheet">
     <div class="modal-handle"></div>
@@ -210,12 +205,10 @@
       <h3 id="block-modal-title">Agregar bloque</h3>
       <button class="modal-x" id="close-block-modal">✕</button>
     </div>
-
     <div class="field-group">
       <label class="field-label">Nombre *</label>
       <input type="text" class="field-input" id="block-title" placeholder="Ej: Cálculo II, Trabajo, Gimnasio…">
     </div>
-
     <div class="field-group">
       <label class="field-label">Tipo</label>
       <div class="chip-row" id="block-type-chips">
@@ -225,7 +218,6 @@
         <button class="type-chip" data-val="other">Otro</button>
       </div>
     </div>
-
     <div class="field-row">
       <div class="field-group">
         <label class="field-label">Inicio</label>
@@ -236,7 +228,6 @@
         <input type="time" class="field-input" id="block-end" value="09:00">
       </div>
     </div>
-
     <div class="field-group">
       <label class="field-label">Días de la semana</label>
       <div class="day-chips" id="block-days">
@@ -249,7 +240,6 @@
         <button class="day-chip" data-day="0">Do</button>
       </div>
     </div>
-
     <div class="field-row">
       <div class="field-group">
         <label class="field-label">Desde</label>
@@ -260,12 +250,10 @@
         <input type="date" class="field-input" id="block-to">
       </div>
     </div>
-
     <div class="field-group">
       <label class="field-label">Notas (opcional)</label>
       <input type="text" class="field-input" id="block-notes" placeholder="Salón, dirección…">
     </div>
-
     <div class="modal-actions">
       <button class="btn-danger-ghost hidden" id="block-delete-btn">Eliminar</button>
       <button class="btn-primary" id="block-save-btn">Guardar</button>
@@ -281,12 +269,10 @@
       <h3 id="event-modal-title">Nuevo plan</h3>
       <button class="modal-x" id="close-event-modal">✕</button>
     </div>
-
     <div class="field-group">
       <label class="field-label">Título *</label>
       <input type="text" class="field-input" id="ev-title" placeholder="¿Qué van a hacer?">
     </div>
-
     <div class="field-group">
       <label class="field-label">Tipo</label>
       <div class="chip-row" id="ev-type-chips">
@@ -295,12 +281,10 @@
         <button class="type-chip" data-val="personal">Personal</button>
       </div>
     </div>
-
     <div class="field-group">
       <label class="field-label">Fecha</label>
       <input type="date" class="field-input" id="ev-date">
     </div>
-
     <div class="field-row">
       <div class="field-group">
         <label class="field-label">Inicio</label>
@@ -311,24 +295,20 @@
         <input type="time" class="field-input" id="ev-end">
       </div>
     </div>
-
     <div class="field-group">
       <label class="field-label">
         <input type="checkbox" id="ev-allday" style="accent-color:var(--accent)"> Todo el día
       </label>
     </div>
-
     <div class="field-group">
       <label class="field-label">Notas</label>
       <textarea class="field-input" id="ev-desc" rows="2" placeholder="Lugar, detalles…" style="resize:vertical"></textarea>
     </div>
-
     <div class="field-group">
       <label class="field-label">
         <input type="checkbox" id="ev-notify" checked style="accent-color:var(--accent)"> Notificar a mi pareja
       </label>
     </div>
-
     <div class="modal-actions">
       <button class="btn-danger-ghost hidden" id="ev-delete-btn">Eliminar</button>
       <button class="btn-primary" id="ev-save-btn">Guardar</button>
