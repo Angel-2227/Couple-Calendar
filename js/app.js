@@ -1,39 +1,55 @@
-import { auth, db, provider, signInWithPopup, signOut, onAuthStateChanged,
-  collection, doc, addDoc, updateDoc, deleteDoc, setDoc, getDoc, getDocs,
-  query, where, orderBy, onSnapshot, serverTimestamp, Timestamp,
-  ALLOWED_EMAILS, USER_CONFIG } from './firebase-config.js';
+import {
+  auth, db, provider,
+  signInWithPopup, signOut, onAuthStateChanged,
+  collection, doc, addDoc, updateDoc, deleteDoc, setDoc, getDocs,
+  query, where, orderBy, onSnapshot, serverTimestamp,
+  ALLOWED_EMAILS, USER_CONFIG
+} from './firebase-config.js';
 
-// ── STATE ──
-let currentUser = null;
-let currentView = 'week';
-let currentDate = new Date();
-let events = [];
-let schedules = [];
+// ────────────────────────────────────────────────
+// STATE
+// ────────────────────────────────────────────────
+let currentUser  = null;
+let currentSection = 'together';
+
+// Dates: each section has its own "selected week" and "selected day"
+const state = {
+  together: { weekStart: getWeekStart(new Date()), selectedDay: new Date() },
+  my:       { weekStart: getWeekStart(new Date()), selectedDay: new Date() },
+};
+
+let schedules     = [];   // all recurring blocks from Firestore
+let events        = [];   // one-time events from Firestore
 let notifications = [];
-let unsubEvents = null;
-let unsubSchedules = null;
-let unsubNotifs = null;
-let miniCalDate = new Date();
-let notifPanelOpen = false;
 
-// ── DOM REFS ──
+let unsubs = [];  // Firestore listeners
+
+// Modal state
+let editingBlockId = null;
+let editingEventId = null;
+let selectedBlockDays  = [];
+let selectedBlockType  = 'university';
+let selectedEventType  = 'date';
+
+// ────────────────────────────────────────────────
+// DOM HELPERS
+// ────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const $$ = sel => document.querySelectorAll(sel);
 
-// ── AUTH ──
+// ────────────────────────────────────────────────
+// AUTH
+// ────────────────────────────────────────────────
 $('google-signin-btn').addEventListener('click', async () => {
   try {
     const result = await signInWithPopup(auth, provider);
-    const email = result.user.email;
-    if (!ALLOWED_EMAILS.includes(email)) {
+    if (!ALLOWED_EMAILS.includes(result.user.email)) {
       await auth.signOut();
-      showToast('❌ Este correo no tiene acceso a la app', 'error');
-      return;
+      showToast('❌ Este correo no tiene acceso', 'error');
     }
   } catch (e) {
-    if (e.code !== 'auth/popup-closed-by-user') {
+    if (e.code !== 'auth/popup-closed-by-user')
       showToast('Error al iniciar sesión: ' + e.message, 'error');
-    }
   }
 });
 
@@ -41,831 +57,900 @@ onAuthStateChanged(auth, async user => {
   $('loading').classList.add('hidden');
   if (user && ALLOWED_EMAILS.includes(user.email)) {
     currentUser = user;
-    await saveUserProfile(user);
-    showApp();
-    startListeners();
+    await saveProfile(user);
+    initApp();
   } else {
     currentUser = null;
     stopListeners();
-    showAuth();
+    $('app').classList.add('hidden');
+    $('auth-screen').classList.remove('hidden');
   }
 });
 
-async function saveUserProfile(user) {
+async function saveProfile(user) {
   const cfg = USER_CONFIG[user.email];
-  // setDoc con merge:true crea el documento si no existe, o lo actualiza si ya existe
   await setDoc(doc(db, 'users', user.uid), {
-    uid: user.uid,
-    email: user.email,
+    uid: user.uid, email: user.email,
     name: cfg?.name || user.displayName,
     photoURL: user.photoURL || '',
     lastSeen: serverTimestamp()
   }, { merge: true });
 }
 
-// ── SHOW/HIDE SCREENS ──
-function showApp() {
-  $('auth-screen').classList.add('hidden');
-  $('app').classList.remove('hidden');
-  const cfg = USER_CONFIG[currentUser.email];
-  $('user-name-display').textContent = cfg?.name || currentUser.displayName;
-
-  const avatarEl = $('user-avatar');
-  if (currentUser.photoURL) {
-    avatarEl.innerHTML = `<img src="${currentUser.photoURL}" class="user-avatar" alt="avatar">`;
-  } else {
-    avatarEl.innerHTML = `<div class="user-initials">${cfg?.shortName || '?'}</div>`;
-  }
-
-  renderPartnerStatus();
-  setView('week');
-  renderMiniCal();
-}
-
-function showAuth() {
-  $('auth-screen').classList.remove('hidden');
-  $('app').classList.add('hidden');
-}
-
-function renderPartnerStatus() {
-  const container = $('partner-status-container');
-  const html = ALLOWED_EMAILS.map(email => {
-    const cfg = USER_CONFIG[email];
-    const isMe = email === currentUser.email;
-    return `
-      <div class="partner-status">
-        <div class="partner-avatar ${cfg.colorClass}">${cfg.shortName}</div>
-        <div class="partner-info">
-          <div class="partner-name">${cfg.name}${isMe ? ' (tú)' : ''}</div>
-          <div class="partner-role">${email}</div>
-        </div>
-      </div>
-    `;
-  }).join('');
-  container.innerHTML = html;
-}
-
-// ── REALTIME LISTENERS ──
-function startListeners() {
-  // Events listener
-  const eventsQ = query(collection(db, 'events'), orderBy('startDate', 'asc'));
-  unsubEvents = onSnapshot(eventsQ, snap => {
-    events = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    renderCurrentView();
-    renderMiniCal();
-  });
-
-  // Schedules listener
-  const schedulesQ = query(collection(db, 'schedules'));
-  unsubSchedules = onSnapshot(schedulesQ, snap => {
-    schedules = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    renderCurrentView();
-  });
-
-  // Notifications listener
-  const notifsQ = query(
-    collection(db, 'notifications'),
-    where('recipientId', '==', currentUser.uid),
-    orderBy('createdAt', 'desc')
-  );
-  unsubNotifs = onSnapshot(notifsQ, snap => {
-    notifications = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    updateNotifBadge();
-    if (notifPanelOpen) renderNotifPanel();
-  });
-}
-
-function stopListeners() {
-  unsubEvents?.(); unsubSchedules?.(); unsubNotifs?.();
-}
-
-// ── VIEWS ──
-function setView(view) {
-  currentView = view;
-  $$('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === view));
-  renderCurrentView();
-  updatePeriodLabel();
-}
-
-function renderCurrentView() {
-  const main = $('calendar-main');
-  if (currentView === 'week') {
-    main.innerHTML = buildWeekView();
-    bindWeekEvents();
-  } else if (currentView === 'month') {
-    main.innerHTML = buildMonthView();
-    bindMonthEvents();
-  } else if (currentView === 'year') {
-    main.innerHTML = buildYearView();
-    bindYearEvents();
-  }
-}
-
-// ── PERIOD NAVIGATION ──
-function navigate(dir) {
-  if (currentView === 'week') currentDate = addDays(currentDate, 7 * dir);
-  else if (currentView === 'month') currentDate = addMonths(currentDate, dir);
-  else if (currentView === 'year') currentDate = addYears(currentDate, dir);
-  renderCurrentView();
-  updatePeriodLabel();
-}
-
-function goToToday() {
-  currentDate = new Date();
-  renderCurrentView();
-  updatePeriodLabel();
-}
-
-function updatePeriodLabel() {
-  const el = $('period-label');
-  const months = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
-                  'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-  const days = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
-  if (currentView === 'week') {
-    const start = getWeekStart(currentDate);
-    const end = addDays(start, 6);
-    if (start.getMonth() === end.getMonth()) {
-      el.textContent = `${start.getDate()} — ${end.getDate()} ${months[start.getMonth()]} ${start.getFullYear()}`;
-    } else {
-      el.textContent = `${start.getDate()} ${months[start.getMonth()]} — ${end.getDate()} ${months[end.getMonth()]} ${end.getFullYear()}`;
-    }
-  } else if (currentView === 'month') {
-    el.textContent = `${months[currentDate.getMonth()]} ${currentDate.getFullYear()}`;
-  } else {
-    el.textContent = `${currentDate.getFullYear()}`;
-  }
-}
-
-// ── WEEK VIEW BUILDER ──
-function buildWeekView() {
-  const weekStart = getWeekStart(currentDate);
-  const days = Array.from({ length: 7 }, (_, i) => addDays(weekStart, i));
-  const today = new Date();
-  const dayNames = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
-  const hours = Array.from({ length: 24 }, (_, i) => i);
-
-  let headerCols = `<div class="week-header-time"></div>`;
-  days.forEach((d, i) => {
-    const isToday = isSameDay(d, today);
-    headerCols += `
-      <div class="week-day-header${isToday ? ' today' : ''}">
-        <div class="week-day-name">${dayNames[d.getDay()]}</div>
-        <div class="week-day-num">${d.getDate()}</div>
-      </div>`;
-  });
-
-  let timeGutter = '';
-  hours.forEach(h => {
-    const top = h * 60;
-    const label = h === 0 ? '' : `${h}:00`;
-    timeGutter += `<div class="time-label" style="top:${top}px">${label}</div>`;
-  });
-
-  let dayCols = '';
-  days.forEach((d, di) => {
-    let lines = '';
-    hours.forEach(h => {
-      lines += `<div class="hour-line" style="top:${h*60}px"></div>`;
-      lines += `<div class="half-line" style="top:${h*60+30}px"></div>`;
-    });
-
-    // Now line
-    if (isSameDay(d, today)) {
-      const mins = today.getHours() * 60 + today.getMinutes();
-      lines += `<div class="now-line" style="top:${mins}px"></div>`;
-    }
-
-    // Get events for this day (actual events + recurring schedules)
-    const dayEvents = getDayEvents(d);
-    dayEvents.forEach(ev => {
-      lines += renderWeekEvent(ev, d);
-    });
-
-    // Free time blocks
-    const freeBlocks = getFreeTimeBlocks(d);
-    freeBlocks.forEach(b => {
-      const top = b.start;
-      const height = b.end - b.start;
-      if (height >= 30) {
-        lines += `<div class="cal-event free-block" style="top:${top}px;height:${height}px">
-          <div class="event-title">💚 Libres</div>
-        </div>`;
-      }
-    });
-
-    dayCols += `
-      <div class="week-day-col" data-date="${formatDate(d)}" id="wday-${di}">
-        ${lines}
-      </div>`;
-  });
-
-  return `
-    <div class="week-view">
-      <div class="week-header">${headerCols}</div>
-      <div class="week-body">
-        <div class="time-gutter" style="position:relative;min-height:1440px">${timeGutter}</div>
-        ${dayCols}
-      </div>
-    </div>`;
-}
-
-function renderWeekEvent(ev, day) {
-  const start = timeToMins(ev.startTime || '00:00');
-  const end = timeToMins(ev.endTime || '01:00');
-  const height = Math.max(end - start, 20);
-  const cfg = USER_CONFIG[ev.ownerEmail];
-  const colorClass = ev.type === 'shared' ? 'shared' : (cfg?.colorClass || 'shared');
-
-  return `<div class="cal-event ${colorClass}"
-    style="top:${start}px;height:${height}px"
-    data-event-id="${ev.id}"
-    onclick="window.showEventPopup(event, '${ev.id}')">
-    <div class="event-title">${ev.title}</div>
-    ${height > 30 ? `<div class="event-time">${ev.startTime} — ${ev.endTime}</div>` : ''}
-  </div>`;
-}
-
-function bindWeekEvents() {
-  // Click on empty space to add event
-  $$('.week-day-col').forEach(col => {
-    col.addEventListener('click', e => {
-      if (e.target !== col && !e.target.classList.contains('hour-line') && !e.target.classList.contains('half-line')) return;
-      const date = col.dataset.date;
-      const rect = col.getBoundingClientRect();
-      const clickY = e.clientY - rect.top + col.closest('.week-body').scrollTop;
-      const hour = Math.floor(clickY / 60);
-      const min = clickY % 60 < 30 ? '00' : '30';
-      openEventModal({ date, startTime: `${String(hour).padStart(2,'0')}:${min}` });
-    });
-  });
-
-  // Scroll to 7am
-  const body = document.querySelector('.week-body');
-  if (body) body.scrollTop = 7 * 60;
-}
-
-// ── MONTH VIEW ──
-function buildMonthView() {
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth();
-  const firstDay = new Date(year, month, 1);
-  const lastDay = new Date(year, month + 1, 0);
-  const startDay = firstDay.getDay();
-  const totalDays = lastDay.getDate();
-  const today = new Date();
-  const dayNames = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
-  const months = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
-                  'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-
-  let header = dayNames.map(d => `<div class="month-day-name">${d}</div>`).join('');
-  let cells = '';
-
-  // Prev month days
-  const prevLast = new Date(year, month, 0).getDate();
-  for (let i = startDay - 1; i >= 0; i--) {
-    const d = new Date(year, month - 1, prevLast - i);
-    cells += buildMonthCell(d, true);
-  }
-
-  // Current month
-  for (let d = 1; d <= totalDays; d++) {
-    const date = new Date(year, month, d);
-    cells += buildMonthCell(date, false);
-  }
-
-  // Next month days
-  const total = startDay + totalDays;
-  const remaining = total % 7 === 0 ? 0 : 7 - (total % 7);
-  for (let d = 1; d <= remaining; d++) {
-    const date = new Date(year, month + 1, d);
-    cells += buildMonthCell(date, true);
-  }
-
-  return `
-    <div class="month-view">
-      <div class="month-grid-header">${header}</div>
-      <div class="month-grid">${cells}</div>
-    </div>`;
-}
-
-function buildMonthCell(date, otherMonth) {
-  const today = new Date();
-  const isToday = isSameDay(date, today);
-  const dayEvents = getDayEvents(date).slice(0, 3);
-  const allDayEventsCount = getDayEvents(date).length;
-
-  let eventsHtml = dayEvents.map(ev => {
-    const cfg = USER_CONFIG[ev.ownerEmail];
-    const cls = ev.type === 'shared' ? 'shared' : (cfg?.colorClass || 'shared');
-    return `<div class="month-event ${cls}" data-event-id="${ev.id}"
-      onclick="event.stopPropagation();window.showEventPopup(event, '${ev.id}')">${ev.title}</div>`;
-  }).join('');
-
-  if (allDayEventsCount > 3) {
-    eventsHtml += `<div class="month-more">+${allDayEventsCount - 3} más</div>`;
-  }
-
-  return `
-    <div class="month-cell${otherMonth ? ' other-month' : ''}${isToday ? ' today' : ''}"
-      data-date="${formatDate(date)}"
-      onclick="window.monthCellClick('${formatDate(date)}')">
-      <div class="month-cell-num">${date.getDate()}</div>
-      ${eventsHtml}
-    </div>`;
-}
-
-function bindMonthEvents() {}
-
-// ── YEAR VIEW ──
-function buildYearView() {
-  const year = currentDate.getFullYear();
-  const months = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
-                  'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-  const dayNms = ['D','L','M','X','J','V','S'];
-
-  let html = '';
-  for (let m = 0; m < 12; m++) {
-    const firstDay = new Date(year, m, 1);
-    const lastDay = new Date(year, m + 1, 0);
-    const startDay = firstDay.getDay();
-    const today = new Date();
-
-    let miniGrid = dayNms.map(d => `<div class="year-mini-day-name">${d}</div>`).join('');
-
-    for (let i = 0; i < startDay; i++) miniGrid += `<div></div>`;
-    for (let d = 1; d <= lastDay.getDate(); d++) {
-      const date = new Date(year, m, d);
-      const isToday = isSameDay(date, today);
-      const hasEv = getDayEvents(date).length > 0;
-      miniGrid += `<div class="year-mini-day${isToday ? ' today' : ''}${hasEv ? ' has-event' : ''}"
-        onclick="event.stopPropagation();window.yearDayClick('${formatDate(date)}')">${d}</div>`;
-    }
-
-    html += `
-      <div class="year-month" onclick="window.yearMonthClick(${year},${m})">
-        <div class="year-month-title">${months[m]}</div>
-        <div class="year-mini-grid">${miniGrid}</div>
-      </div>`;
-  }
-
-  return `<div class="year-view">${html}</div>`;
-}
-
-function bindYearEvents() {}
-
-// ── EVENTS DATA ──
-function getDayEvents(date) {
-  const dateStr = formatDate(date);
-  const dayOfWeek = date.getDay();
-  const result = [];
-
-  // One-time events
-  events.forEach(ev => {
-    if (ev.startDate === dateStr || (ev.allDay && ev.startDate <= dateStr && ev.endDate >= dateStr)) {
-      result.push(ev);
-    }
-    // Multi-day
-    if (ev.startDate && ev.endDate && ev.startDate <= dateStr && ev.endDate >= dateStr && ev.startDate !== ev.endDate) {
-      if (!result.find(r => r.id === ev.id)) result.push(ev);
-    }
-  });
-
-  // Recurring schedules
-  schedules.forEach(sch => {
-    if (sch.days && sch.days.includes(dayOfWeek)) {
-      // Check date range
-      const from = sch.startDate || '2020-01-01';
-      const to = sch.endDate || '2050-12-31';
-      if (dateStr >= from && dateStr <= to) {
-        result.push({
-          id: 'sch_' + sch.id,
-          title: sch.title,
-          startTime: sch.startTime,
-          endTime: sch.endTime,
-          ownerEmail: sch.ownerEmail,
-          type: 'schedule',
-          isSchedule: true
-        });
-      }
-    }
-  });
-
-  return result.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
-}
-
-function getFreeTimeBlocks(date) {
-  const dayEvents = getDayEvents(date);
-  if (dayEvents.length < 2) return [];
-
-  // Get busy time for both users
-  const busyRanges = [];
-  ALLOWED_EMAILS.forEach(email => {
-    dayEvents.filter(ev => ev.ownerEmail === email || ev.type === 'shared').forEach(ev => {
-      if (ev.startTime && ev.endTime) {
-        busyRanges.push({ start: timeToMins(ev.startTime), end: timeToMins(ev.endTime) });
-      }
-    });
-  });
-
-  // Find overlapping busy (both busy)
-  const juanBusy = dayEvents.filter(ev => ev.ownerEmail === ALLOWED_EMAILS[0]).map(ev => ({
-    start: timeToMins(ev.startTime || '00:00'), end: timeToMins(ev.endTime || '01:00')
-  }));
-  const greisiBusy = dayEvents.filter(ev => ev.ownerEmail === ALLOWED_EMAILS[1]).map(ev => ({
-    start: timeToMins(ev.startTime || '00:00'), end: timeToMins(ev.endTime || '01:00')
-  }));
-
-  if (!juanBusy.length || !greisiBusy.length) return [];
-
-  // Find free slots (8am–10pm, both free)
-  const freeSlots = [];
-  const workStart = 8 * 60, workEnd = 22 * 60;
-  let t = workStart;
-
-  while (t < workEnd) {
-    const jBusy = juanBusy.some(r => t >= r.start && t < r.end);
-    const gBusy = greisiBusy.some(r => t >= r.start && t < r.end);
-    if (!jBusy && !gBusy) {
-      if (!freeSlots.length || freeSlots[freeSlots.length-1].end !== t) {
-        freeSlots.push({ start: t, end: t + 30 });
-      } else {
-        freeSlots[freeSlots.length-1].end = t + 30;
-      }
-    }
-    t += 30;
-  }
-
-  return freeSlots.filter(s => (s.end - s.start) >= 60);
-}
-
-// ── MINI CALENDAR ──
-function renderMiniCal() {
-  const year = miniCalDate.getFullYear();
-  const month = miniCalDate.getMonth();
-  const months = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
-                  'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-  const dayNms = ['D','L','M','X','J','V','S'];
-  const today = new Date();
-
-  $('mini-cal-title').textContent = `${months[month]} ${year}`;
-
-  const firstDay = new Date(year, month, 1).getDay();
-  const lastDay = new Date(year, month + 1, 0).getDate();
-  const prevLast = new Date(year, month, 0).getDate();
-
-  let html = dayNms.map(d => `<div class="mini-day-name">${d}</div>`).join('');
-
-  for (let i = firstDay - 1; i >= 0; i--) {
-    html += `<div class="mini-day other-month">${prevLast - i}</div>`;
-  }
-
-  for (let d = 1; d <= lastDay; d++) {
-    const date = new Date(year, month, d);
-    const isToday = isSameDay(date, today);
-    const isSelected = isSameDay(date, currentDate);
-    const hasEv = getDayEvents(date).length > 0;
-    html += `<div class="mini-day${isToday ? ' today' : ''}${isSelected ? ' selected' : ''}${hasEv ? ' has-event' : ''}"
-      onclick="window.miniDayClick('${formatDate(date)}')">${d}</div>`;
-  }
-
-  $('mini-cal-grid').innerHTML = html;
-}
-
-// ── EVENT MODAL ──
-let editingEventId = null;
-
-function openEventModal(prefill = {}) {
-  editingEventId = null;
-  const modal = $('event-modal');
-  $('modal-event-title').value = '';
-  $('modal-event-date').value = prefill.date || formatDate(currentDate);
-  $('modal-event-start').value = prefill.startTime || '09:00';
-  $('modal-event-end').value = prefill.endTime || '10:00';
-  $('modal-event-type').value = 'personal';
-  $('modal-event-desc').value = '';
-  $('modal-allday').checked = false;
-  $('modal-notify-partner').checked = true;
-  modal.classList.remove('hidden');
-  $('modal-delete-btn').classList.add('hidden');
-}
-
-function openEditModal(ev) {
-  editingEventId = ev.id;
-  const modal = $('event-modal');
-  $('modal-event-title').value = ev.title || '';
-  $('modal-event-date').value = ev.startDate || '';
-  $('modal-event-start').value = ev.startTime || '';
-  $('modal-event-end').value = ev.endTime || '';
-  $('modal-event-type').value = ev.type || 'personal';
-  $('modal-event-desc').value = ev.description || '';
-  $('modal-allday').checked = ev.allDay || false;
-  modal.classList.remove('hidden');
-  $('modal-delete-btn').classList.remove('hidden');
-}
-
-$('close-event-modal').addEventListener('click', () => $('event-modal').classList.add('hidden'));
-$('cancel-event-btn').addEventListener('click', () => $('event-modal').classList.add('hidden'));
-
-$('save-event-btn').addEventListener('click', async () => {
-  const title = $('modal-event-title').value.trim();
-  if (!title) { showToast('Por favor ingresa un título', 'error'); return; }
-
-  const type = $('modal-event-type').value;
-  const data = {
-    title,
-    startDate: $('modal-event-date').value,
-    endDate: $('modal-event-date').value,
-    startTime: $('modal-event-start').value,
-    endTime: $('modal-event-end').value,
-    allDay: $('modal-allday').checked,
-    type,
-    description: $('modal-event-desc').value,
-    ownerEmail: currentUser.email,
-    createdBy: currentUser.uid,
-    sharedWith: ALLOWED_EMAILS.map(e => e),
-    updatedAt: serverTimestamp()
-  };
-
-  try {
-    if (editingEventId) {
-      await updateDoc(doc(db, 'events', editingEventId), data);
-      showToast('✅ Evento actualizado');
-    } else {
-      data.createdAt = serverTimestamp();
-      const ref = await addDoc(collection(db, 'events'), data);
-      // Notify partner
-      if ($('modal-notify-partner').checked) {
-        await notifyPartner(title, data.startDate, data.startTime);
-      }
-      showToast('✅ Evento creado');
-    }
-    $('event-modal').classList.add('hidden');
-  } catch (e) {
-    showToast('Error: ' + e.message, 'error');
-  }
-});
-
-$('modal-delete-btn').addEventListener('click', async () => {
-  if (!editingEventId) return;
-  if (!confirm('¿Eliminar este evento?')) return;
-  try {
-    await deleteDoc(doc(db, 'events', editingEventId));
-    $('event-modal').classList.add('hidden');
-    showToast('🗑️ Evento eliminado');
-  } catch (e) {
-    showToast('Error: ' + e.message, 'error');
-  }
-});
-
-// ── SCHEDULE MODAL ──
-let selectedScheduleDays = [];
-
-function openScheduleModal() {
-  selectedScheduleDays = [];
-  $('modal-sch-title').value = '';
-  $('modal-sch-start').value = '08:00';
-  $('modal-sch-end').value = '10:00';
-  $('modal-sch-from').value = formatDate(new Date());
-  $('modal-sch-to').value = '2026-12-31';
-  $$('.recur-day').forEach(b => b.classList.remove('selected'));
-  $('schedule-modal').classList.remove('hidden');
-}
-
-$('close-schedule-modal').addEventListener('click', () => $('schedule-modal').classList.add('hidden'));
-$('cancel-schedule-btn').addEventListener('click', () => $('schedule-modal').classList.add('hidden'));
-
-document.addEventListener('click', e => {
-  if (e.target.classList.contains('recur-day')) {
-    const day = parseInt(e.target.dataset.day);
-    e.target.classList.toggle('selected');
-    if (selectedScheduleDays.includes(day)) {
-      selectedScheduleDays = selectedScheduleDays.filter(d => d !== day);
-    } else {
-      selectedScheduleDays.push(day);
-    }
-  }
-});
-
-$('save-schedule-btn').addEventListener('click', async () => {
-  const title = $('modal-sch-title').value.trim();
-  if (!title) { showToast('Por favor ingresa un título', 'error'); return; }
-  if (!selectedScheduleDays.length) { showToast('Selecciona al menos un día', 'error'); return; }
-
-  try {
-    await addDoc(collection(db, 'schedules'), {
-      title,
-      startTime: $('modal-sch-start').value,
-      endTime: $('modal-sch-end').value,
-      days: selectedScheduleDays,
-      startDate: $('modal-sch-from').value,
-      endDate: $('modal-sch-to').value,
-      ownerEmail: currentUser.email,
-      ownerId: currentUser.uid,
-      createdAt: serverTimestamp()
-    });
-    $('schedule-modal').classList.add('hidden');
-    showToast('✅ Horario guardado');
-  } catch (e) {
-    showToast('Error: ' + e.message, 'error');
-  }
-});
-
-// ── NOTIFICATIONS ──
-async function notifyPartner(title, date, time) {
-  const partnerEmail = ALLOWED_EMAILS.find(e => e !== currentUser.email);
-  const partnerDoc = await getDocs(query(collection(db, 'users'), where('email', '==', partnerEmail)));
-  if (partnerDoc.empty) return;
-
-  const partner = partnerDoc.docs[0].data();
-  const myName = USER_CONFIG[currentUser.email]?.name || 'Tu pareja';
-
-  await addDoc(collection(db, 'notifications'), {
-    recipientId: partner.uid,
-    title: `${myName} agregó un evento`,
-    body: `"${title}" el ${date}${time ? ' a las ' + time : ''}`,
-    type: 'new_event',
-    read: false,
-    createdAt: serverTimestamp()
-  });
-}
-
-function updateNotifBadge() {
-  const unread = notifications.filter(n => !n.read).length;
-  const badge = $('notif-badge');
-  if (unread > 0) {
-    badge.textContent = unread;
-    badge.classList.remove('hidden');
-  } else {
-    badge.classList.add('hidden');
-  }
-}
-
-function renderNotifPanel() {
-  const panel = $('notif-panel');
-  if (!panel) return;
-  const list = panel.querySelector('.notif-list');
-
-  if (notifications.length === 0) {
-    list.innerHTML = `<div class="notif-empty">💌 Sin notificaciones</div>`;
-    return;
-  }
-
-  list.innerHTML = notifications.slice(0, 20).map(n => `
-    <div class="notif-item${n.read ? '' : ' unread'}" data-notif-id="${n.id}">
-      <div class="notif-icon">🔔</div>
-      <div class="notif-body">
-        <div class="notif-title">${n.title}: ${n.body}</div>
-        <div class="notif-time">${formatRelativeTime(n.createdAt)}</div>
-      </div>
-    </div>
-  `).join('');
-
-  // Mark as read
-  notifications.filter(n => !n.read).forEach(async n => {
-    await updateDoc(doc(db, 'notifications', n.id), { read: true });
-  });
-}
-
-// ── EVENT POPUP ──
-window.showEventPopup = function(e, eventId) {
-  e.stopPropagation();
-  const existing = document.querySelector('.event-popup');
-  if (existing) existing.remove();
-
-  const ev = events.find(ev => ev.id === eventId) ||
-             schedules.find(s => 'sch_' + s.id === eventId);
-  if (!ev) return;
-
-  const cfg = USER_CONFIG[ev.ownerEmail];
-  const color = ev.type === 'shared' ? '#c084fc' : (cfg?.color || '#818cf8');
-
-  const popup = document.createElement('div');
-  popup.className = 'event-popup';
-  popup.style.left = Math.min(e.clientX, window.innerWidth - 300) + 'px';
-  popup.style.top = Math.min(e.clientY + 8, window.innerHeight - 250) + 'px';
-
-  popup.innerHTML = `
-    <div class="event-popup-color" style="background:${color}"></div>
-    <div class="event-popup-title">${ev.title}</div>
-    <div class="event-popup-detail">📅 ${ev.startDate || ''}</div>
-    ${ev.startTime ? `<div class="event-popup-detail">🕐 ${ev.startTime} — ${ev.endTime}</div>` : ''}
-    ${ev.description ? `<div class="event-popup-detail">📝 ${ev.description}</div>` : ''}
-    <div class="event-popup-detail">👤 ${cfg?.name || 'Compartido'}</div>
-    ${ev.createdBy === currentUser?.uid && !ev.isSchedule ? `
-      <div style="display:flex;gap:8px;margin-top:12px">
-        <button class="btn btn-secondary" style="flex:1;padding:7px" onclick="window.editEvent('${ev.id}')">Editar</button>
-      </div>` : ''}
-  `;
-
-  document.body.appendChild(popup);
-  setTimeout(() => document.addEventListener('click', () => popup.remove(), { once: true }), 100);
-};
-
-window.editEvent = function(id) {
-  document.querySelector('.event-popup')?.remove();
-  const ev = events.find(e => e.id === id);
-  if (ev) openEditModal(ev);
-};
-
-// ── GLOBAL CLICK HANDLERS ──
-window.miniDayClick = function(dateStr) {
-  currentDate = parseDate(dateStr);
-  if (currentView === 'year' || currentView === 'month') setView('week');
-  else renderCurrentView();
-  renderMiniCal();
-  updatePeriodLabel();
-};
-
-window.monthCellClick = function(dateStr) {
-  currentDate = parseDate(dateStr);
-  setView('week');
-  updatePeriodLabel();
-};
-
-window.yearDayClick = function(dateStr) {
-  currentDate = parseDate(dateStr);
-  setView('week');
-  updatePeriodLabel();
-};
-
-window.yearMonthClick = function(year, month) {
-  currentDate = new Date(year, month, 1);
-  setView('month');
-  updatePeriodLabel();
-};
-
-// ── TOPBAR EVENTS ──
-$$('.nav-btn').forEach(btn => {
-  btn.addEventListener('click', () => setView(btn.dataset.view));
-});
-
-$('btn-prev').addEventListener('click', () => navigate(-1));
-$('btn-next').addEventListener('click', () => navigate(1));
-$('btn-today').addEventListener('click', goToToday);
-$('btn-add-event').addEventListener('click', () => openEventModal());
-$('btn-add-schedule').addEventListener('click', openScheduleModal);
-
-$('mini-cal-prev').addEventListener('click', () => {
-  miniCalDate = addMonths(miniCalDate, -1);
-  renderMiniCal();
-});
-$('mini-cal-next').addEventListener('click', () => {
-  miniCalDate = addMonths(miniCalDate, 1);
-  renderMiniCal();
-});
-
-// Notifications panel
-$('notif-btn').addEventListener('click', e => {
-  e.stopPropagation();
-  notifPanelOpen = !notifPanelOpen;
-  const panel = $('notif-panel');
-  if (notifPanelOpen) {
-    panel.classList.remove('hidden');
-    renderNotifPanel();
-  } else {
-    panel.classList.add('hidden');
-  }
-});
-
-document.addEventListener('click', () => {
-  notifPanelOpen = false;
-  $('notif-panel')?.classList.add('hidden');
-});
-
-$('notif-panel')?.addEventListener('click', e => e.stopPropagation());
-
-// Clear notifications
-$('clear-notifs-btn')?.addEventListener('click', async () => {
-  for (const n of notifications) {
-    await deleteDoc(doc(db, 'notifications', n.id));
-  }
-  showToast('Notificaciones eliminadas');
-});
-
-// Sign out
 $('signout-btn').addEventListener('click', async () => {
   await signOut(auth);
   showToast('👋 Hasta luego');
 });
 
-// ── TOAST ──
+// ────────────────────────────────────────────────
+// INIT
+// ────────────────────────────────────────────────
+function initApp() {
+  $('auth-screen').classList.add('hidden');
+  $('app').classList.remove('hidden');
+
+  const cfg = USER_CONFIG[currentUser.email];
+
+  // Avatars
+  const avatarHtml = currentUser.photoURL
+    ? `<img src="${currentUser.photoURL}" alt="avatar">`
+    : `<div class="initials-avatar" style="width:32px;height:32px">${cfg?.shortName || '?'}</div>`;
+
+  $('user-avatar-top').innerHTML = avatarHtml;
+  $('menu-avatar').innerHTML = currentUser.photoURL
+    ? `<img src="${currentUser.photoURL}" alt="avatar">`
+    : `<div class="initials-avatar">${cfg?.shortName || '?'}</div>`;
+
+  $('menu-name').textContent  = cfg?.name || currentUser.displayName || 'Usuario';
+  $('menu-email').textContent = currentUser.email;
+
+  startListeners();
+  setSection('together');
+}
+
+// ────────────────────────────────────────────────
+// FIRESTORE LISTENERS
+// ────────────────────────────────────────────────
+function startListeners() {
+  // All schedules (both users)
+  const schQ = query(collection(db, 'schedules'), orderBy('createdAt', 'asc'));
+  unsubs.push(onSnapshot(schQ, snap => {
+    schedules = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderCurrentGrids();
+  }));
+
+  // All events
+  const evQ = query(collection(db, 'events'), orderBy('startDate', 'asc'));
+  unsubs.push(onSnapshot(evQ, snap => {
+    events = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderCurrentGrids();
+    renderEventsList();
+  }));
+
+  // Notifications
+  const nQ = query(
+    collection(db, 'notifications'),
+    where('recipientId', '==', currentUser.uid),
+    orderBy('createdAt', 'desc')
+  );
+  unsubs.push(onSnapshot(nQ, snap => {
+    notifications = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    updateNotifBadge();
+    if (currentSection === 'notifications') renderNotifsList();
+  }));
+}
+
+function stopListeners() {
+  unsubs.forEach(u => u());
+  unsubs = [];
+}
+
+// ────────────────────────────────────────────────
+// SLIDE MENU
+// ────────────────────────────────────────────────
+$('menu-btn').addEventListener('click', () => {
+  const menu = $('slide-menu');
+  const overlay = $('menu-overlay');
+  const isOpen = menu.classList.contains('open');
+  if (isOpen) closeMenu();
+  else {
+    menu.classList.remove('closed');
+    menu.classList.add('open');
+    overlay.classList.remove('hidden');
+  }
+});
+
+$('menu-overlay').addEventListener('click', closeMenu);
+
+function closeMenu() {
+  $('slide-menu').classList.remove('open');
+  $('slide-menu').classList.add('closed');
+  $('menu-overlay').classList.add('hidden');
+}
+
+$$('.menu-item').forEach(btn => {
+  btn.addEventListener('click', () => {
+    setSection(btn.dataset.section);
+    closeMenu();
+  });
+});
+
+// ────────────────────────────────────────────────
+// SECTIONS
+// ────────────────────────────────────────────────
+function setSection(name) {
+  currentSection = name;
+
+  // Menu highlight
+  $$('.menu-item').forEach(b => b.classList.toggle('active', b.dataset.section === name));
+
+  // Show/hide sections
+  $$('.section').forEach(s => s.classList.add('hidden'));
+  $(`section-${name}`)?.classList.remove('hidden');
+
+  // FAB visibility
+  const showFab = (name === 'together' || name === 'my-schedule');
+  $('fab-add').classList.toggle('hidden', !showFab);
+
+  // Topbar period label
+  updateTopbarLabel();
+
+  // Render
+  if (name === 'together') renderTogetherView();
+  else if (name === 'my-schedule') renderMyView();
+  else if (name === 'events') renderEventsList();
+  else if (name === 'notifications') { renderNotifsList(); markNotifsRead(); }
+}
+
+// ────────────────────────────────────────────────
+// SECTION: TOGETHER
+// ────────────────────────────────────────────────
+function renderTogetherView() {
+  buildDayStrip('together', state.together);
+  renderTogetherGrid();
+  updateWeekLabel('together-week-label', state.together.weekStart);
+}
+
+function renderTogetherGrid() {
+  renderTimeGrid($('together-grid'), state.together.selectedDay, 'together');
+}
+
+$('together-prev').addEventListener('click', () => {
+  state.together.weekStart = addDays(state.together.weekStart, -7);
+  state.together.selectedDay = state.together.weekStart;
+  renderTogetherView();
+  updateTopbarLabel();
+});
+$('together-next').addEventListener('click', () => {
+  state.together.weekStart = addDays(state.together.weekStart, 7);
+  state.together.selectedDay = addDays(state.together.weekStart, 0);
+  renderTogetherView();
+  updateTopbarLabel();
+});
+$('together-today').addEventListener('click', () => {
+  state.together.weekStart = getWeekStart(new Date());
+  state.together.selectedDay = new Date();
+  renderTogetherView();
+  updateTopbarLabel();
+});
+
+// ────────────────────────────────────────────────
+// SECTION: MY SCHEDULE
+// ────────────────────────────────────────────────
+function renderMyView() {
+  buildDayStrip('my', state.my);
+  renderMyGrid();
+  updateWeekLabel('my-week-label', state.my.weekStart);
+}
+
+function renderMyGrid() {
+  renderTimeGrid($('my-grid'), state.my.selectedDay, 'my');
+}
+
+$('my-prev').addEventListener('click', () => {
+  state.my.weekStart = addDays(state.my.weekStart, -7);
+  state.my.selectedDay = state.my.weekStart;
+  renderMyView();
+  updateTopbarLabel();
+});
+$('my-next').addEventListener('click', () => {
+  state.my.weekStart = addDays(state.my.weekStart, 7);
+  state.my.selectedDay = addDays(state.my.weekStart, 0);
+  renderMyView();
+  updateTopbarLabel();
+});
+$('my-today').addEventListener('click', () => {
+  state.my.weekStart = getWeekStart(new Date());
+  state.my.selectedDay = new Date();
+  renderMyView();
+  updateTopbarLabel();
+});
+
+// ────────────────────────────────────────────────
+// DAY STRIP
+// ────────────────────────────────────────────────
+function buildDayStrip(key, s) {
+  const stripId = key === 'together' ? 'together-day-strip' : 'my-day-strip';
+  const strip   = $(stripId);
+  const dayNames = ['Do','Lu','Ma','Mi','Ju','Vi','Sá'];
+  const today = new Date();
+
+  let html = '';
+  for (let i = 0; i < 7; i++) {
+    const d = addDays(s.weekStart, i);
+    const isToday   = isSameDay(d, today);
+    const isSelected = isSameDay(d, s.selectedDay);
+    const hasEv = getDayBlocks(d).length > 0;
+    const classes = [
+      'day-pill',
+      isToday ? 'today-day' : '',
+      isSelected ? 'active' : '',
+      hasEv ? 'has-ev' : ''
+    ].filter(Boolean).join(' ');
+
+    html += `<div class="${classes}" data-date="${formatDate(d)}" data-key="${key}">
+      <span class="dn">${dayNames[d.getDay()]}</span>
+      <span class="dd">${d.getDate()}</span>
+    </div>`;
+  }
+  strip.innerHTML = html;
+
+  strip.querySelectorAll('.day-pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      const k = pill.dataset.key;
+      s.selectedDay = parseDate(pill.dataset.date);
+      buildDayStrip(k, s);
+      if (k === 'together') renderTogetherGrid();
+      else renderMyGrid();
+    });
+  });
+}
+
+// ────────────────────────────────────────────────
+// TIME GRID RENDERER
+// Hours 7:00 – 22:00  →  15h × 60px = 900px total
+// ────────────────────────────────────────────────
+const GRID_START = 7;   // 7:00
+const GRID_END   = 22;  // 22:00
+const PX_PER_MIN = 1;   // 60px per hour
+
+function timeToY(timeStr) {
+  const [h, m] = (timeStr || '07:00').split(':').map(Number);
+  return ((h - GRID_START) * 60 + m) * PX_PER_MIN;
+}
+
+function renderTimeGrid(container, day, mode) {
+  if (!container) return;
+
+  let html = '';
+
+  // Hour lines
+  for (let h = GRID_START; h <= GRID_END; h++) {
+    const y = (h - GRID_START) * 60;
+    const label = h <= 12 ? `${h}am` : h === 12 ? '12pm' : `${h - 12}pm`;
+    html += `<div class="tg-row" style="top:${y}px">
+      <div class="tg-time">${h < GRID_END ? label : ''}</div>
+      <div class="tg-line"></div>
+    </div>`;
+    // Half-hour
+    if (h < GRID_END) {
+      html += `<div class="tg-row" style="top:${y+30}px">
+        <div class="tg-time"></div>
+        <div class="tg-line half"></div>
+      </div>`;
+    }
+  }
+
+  // Now indicator
+  const now = new Date();
+  if (isSameDay(day, now) && now.getHours() >= GRID_START && now.getHours() < GRID_END) {
+    const y = ((now.getHours() - GRID_START) * 60 + now.getMinutes()) * PX_PER_MIN;
+    html += `<div class="now-indicator" style="top:${y}px"></div>`;
+  }
+
+  // Blocks
+  if (mode === 'together') {
+    html += buildTogetherBlocks(day);
+  } else {
+    html += buildMyBlocks(day);
+  }
+
+  container.innerHTML = html;
+
+  // Attach click handlers for my-schedule blocks
+  if (mode === 'my') {
+    container.querySelectorAll('.tg-block[data-block-id]').forEach(el => {
+      el.addEventListener('click', () => openEditBlock(el.dataset.blockId));
+    });
+    container.querySelectorAll('.tg-block[data-event-id]').forEach(el => {
+      el.addEventListener('click', () => openEditEvent(el.dataset.eventId));
+    });
+  }
+
+  // Scroll to 7am (or current time)
+  const wrapper = container.closest('.time-grid-wrapper');
+  if (wrapper) {
+    const scrollTo = isSameDay(day, new Date())
+      ? Math.max(0, ((now.getHours() - GRID_START) * 60 - 60) * PX_PER_MIN)
+      : 0;
+    wrapper.scrollTop = scrollTo;
+  }
+}
+
+// ── TOGETHER: show both users' blocks + free slots ──
+function buildTogetherBlocks(day) {
+  const dateStr = formatDate(day);
+  const dayOfWeek = day.getDay();
+
+  const juanEmail   = ALLOWED_EMAILS[0];
+  const greisiEmail = ALLOWED_EMAILS[1];
+
+  // Collect blocks for each person
+  const juanBlocks   = getPersonBlocks(day, juanEmail);
+  const greisiBlocks = getPersonBlocks(day, greisiEmail);
+
+  // Build minute-level busy arrays (07:00 – 22:00 = 900 mins)
+  const juanBusy   = buildBusyArray(juanBlocks);
+  const greisiBusy = buildBusyArray(greisiBlocks);
+
+  let html = '';
+
+  // Draw Juan's blocks
+  juanBlocks.forEach(b => {
+    const y = timeToY(b.startTime);
+    const h = Math.max(timeToY(b.endTime) - y, 20);
+    html += `<div class="tg-block juan" style="top:${y}px;height:${h}px">
+      <div class="block-name">${b.title}</div>
+      ${h > 30 ? `<div class="block-sub">${b.startTime} – ${b.endTime}</div>` : ''}
+      ${h > 44 ? `<div class="block-owner">Juan</div>` : ''}
+    </div>`;
+  });
+
+  // Draw Greisi's blocks (offset if overlap with Juan)
+  greisiBlocks.forEach(b => {
+    const y = timeToY(b.startTime);
+    const h = Math.max(timeToY(b.endTime) - y, 20);
+    const overlaps = juanBlocks.some(jb =>
+      timeToMins(b.startTime) < timeToMins(jb.endTime) &&
+      timeToMins(b.endTime) > timeToMins(jb.startTime)
+    );
+    const cls = overlaps ? 'tg-block greisi offset' : 'tg-block greisi';
+    html += `<div class="${cls}" style="top:${y}px;height:${h}px">
+      <div class="block-name">${b.title}</div>
+      ${h > 30 ? `<div class="block-sub">${b.startTime} – ${b.endTime}</div>` : ''}
+      ${h > 44 ? `<div class="block-owner">Greisi</div>` : ''}
+    </div>`;
+  });
+
+  // Draw "ambos" overlap highlights
+  const overlapRanges = findOverlapRanges(juanBlocks, greisiBlocks);
+  overlapRanges.forEach(r => {
+    const y = r.start * PX_PER_MIN;
+    const h = Math.max((r.end - r.start) * PX_PER_MIN, 4);
+    html += `<div class="tg-block both" style="top:${y}px;height:${h}px;opacity:0.5;pointer-events:none;z-index:2;left:44px;right:0">
+      <div class="block-name" style="font-size:0.6rem">Ambos ocupados</div>
+    </div>`;
+  });
+
+  // Draw free slots (both free simultaneously, 7am-10pm)
+  const freeSlots = findFreeSlots(juanBusy, greisiBusy);
+  freeSlots.forEach(slot => {
+    if (slot.end - slot.start < 30) return; // skip < 30 min
+    const y = slot.start * PX_PER_MIN;
+    const h = (slot.end - slot.start) * PX_PER_MIN;
+    html += `<div class="tg-block free-slot" style="top:${y}px;height:${h}px">
+      <div class="block-name">💚 Libres juntos</div>
+      ${h > 36 ? `<div class="block-sub">${minsToTime(slot.start + GRID_START * 60)} – ${minsToTime(slot.end + GRID_START * 60)}</div>` : ''}
+    </div>`;
+  });
+
+  // Events for this day
+  const dayEvents = events.filter(ev => ev.startDate === dateStr || (ev.startDate <= dateStr && ev.endDate >= dateStr));
+  dayEvents.forEach(ev => {
+    const y = timeToY(ev.startTime || '07:00');
+    const h = Math.max(timeToY(ev.endTime || '08:00') - y, 20);
+    html += `<div class="tg-block event-date" style="top:${y}px;height:${h}px;z-index:15" data-event-id="${ev.id}">
+      <div class="block-name">💜 ${ev.title}</div>
+      ${h > 30 ? `<div class="block-sub">${ev.startTime || ''} – ${ev.endTime || ''}</div>` : ''}
+    </div>`;
+  });
+
+  return html;
+}
+
+// ── MY SCHEDULE: only current user's blocks ──
+function buildMyBlocks(day) {
+  const dateStr = formatDate(day);
+  const blocks  = getPersonBlocks(day, currentUser.email);
+
+  let html = '';
+  blocks.forEach(b => {
+    const y = timeToY(b.startTime);
+    const h = Math.max(timeToY(b.endTime) - y, 20);
+    const cls = USER_CONFIG[currentUser.email]?.colorClass || 'juan';
+    const id  = b.isEvent ? '' : `data-block-id="${b.id}"`;
+    const eid = b.isEvent ? `data-event-id="${b.id}"` : '';
+    html += `<div class="tg-block ${cls}" style="top:${y}px;height:${h}px" ${id}${eid}>
+      <div class="block-name">${b.title}</div>
+      ${h > 30 ? `<div class="block-sub">${b.startTime} – ${b.endTime}</div>` : ''}
+      ${h > 44 ? `<div class="block-owner">${b.typeLabel || ''}</div>` : ''}
+    </div>`;
+  });
+
+  // Events
+  const dayEvents = events.filter(ev =>
+    (ev.startDate === dateStr || (ev.startDate <= dateStr && ev.endDate >= dateStr)) &&
+    (ev.ownerEmail === currentUser.email || ev.type === 'shared' || ev.type === 'date')
+  );
+  dayEvents.forEach(ev => {
+    const y = timeToY(ev.startTime || '07:00');
+    const h = Math.max(timeToY(ev.endTime || '08:00') - y, 20);
+    html += `<div class="tg-block event-date" style="top:${y}px;height:${h}px;z-index:10" data-event-id="${ev.id}">
+      <div class="block-name">💜 ${ev.title}</div>
+      ${h > 30 ? `<div class="block-sub">${ev.startTime || ''}</div>` : ''}
+    </div>`;
+  });
+
+  return html;
+}
+
+// ── Get all blocks (schedules) for a person on a date ──
+function getPersonBlocks(day, email) {
+  const dateStr   = formatDate(day);
+  const dayOfWeek = day.getDay();
+  const result    = [];
+
+  schedules.forEach(sch => {
+    if (sch.ownerEmail !== email) return;
+    if (!sch.days || !sch.days.includes(dayOfWeek)) return;
+    const from = sch.startDate || '2020-01-01';
+    const to   = sch.endDate   || '2050-12-31';
+    if (dateStr < from || dateStr > to) return;
+
+    const typeLabels = { university: 'Universidad', work: 'Trabajo', activity: 'Actividad', other: 'Otro' };
+    result.push({
+      id: sch.id, title: sch.title,
+      startTime: sch.startTime, endTime: sch.endTime,
+      ownerEmail: sch.ownerEmail,
+      typeLabel: typeLabels[sch.type] || ''
+    });
+  });
+
+  return result.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
+}
+
+function getDayBlocks(day) {
+  const dateStr = formatDate(day);
+  const dow = day.getDay();
+  return schedules.filter(s => s.days?.includes(dow) &&
+    (s.startDate || '2020-01-01') <= dateStr &&
+    (s.endDate || '2050-12-31') >= dateStr
+  );
+}
+
+// ── Build busy minutes array (relative to GRID_START) ──
+function buildBusyArray(blocks) {
+  const arr = new Uint8Array(900); // 15h × 60min
+  blocks.forEach(b => {
+    const s = Math.max(0, timeToMins(b.startTime) - GRID_START * 60);
+    const e = Math.min(900, timeToMins(b.endTime) - GRID_START * 60);
+    for (let i = s; i < e; i++) arr[i] = 1;
+  });
+  return arr;
+}
+
+// ── Find overlap ranges (both busy, in grid-relative minutes) ──
+function findOverlapRanges(juanBlocks, greisiBlocks) {
+  const ranges = [];
+  juanBlocks.forEach(jb => {
+    greisiBlocks.forEach(gb => {
+      const s = Math.max(timeToMins(jb.startTime), timeToMins(gb.startTime)) - GRID_START * 60;
+      const e = Math.min(timeToMins(jb.endTime),   timeToMins(gb.endTime))   - GRID_START * 60;
+      if (e > s) ranges.push({ start: s, end: e });
+    });
+  });
+  return ranges;
+}
+
+// ── Find free slots (both free in grid-relative minutes) ──
+function findFreeSlots(juanBusy, greisiBusy) {
+  const slots = [];
+  let inFree = false, freeStart = 0;
+  for (let i = 0; i < 900; i++) {
+    const bothFree = juanBusy[i] === 0 && greisiBusy[i] === 0;
+    if (bothFree && !inFree) { inFree = true; freeStart = i; }
+    if (!bothFree && inFree) { inFree = false; slots.push({ start: freeStart, end: i }); }
+  }
+  if (inFree) slots.push({ start: freeStart, end: 900 });
+  return slots.filter(s => s.end - s.start >= 30);
+}
+
+// ────────────────────────────────────────────────
+// EVENTS LIST
+// ────────────────────────────────────────────────
+function renderEventsList() {
+  if (currentSection !== 'events') return;
+  const container = $('events-list');
+
+  const sorted = [...events].sort((a, b) => a.startDate?.localeCompare(b.startDate));
+
+  if (sorted.length === 0) {
+    container.innerHTML = `
+      <div class="event-empty">
+        <div class="event-empty-icon">💜</div>
+        <p>No hay planes todavía.<br>¡Agrega su primera cita!</p>
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = sorted.map(ev => {
+    const cfg    = USER_CONFIG[ev.ownerEmail];
+    const dotCls = ev.type === 'date' ? 'date' : ev.type === 'shared' ? 'shared' : 'personal';
+    const canEdit = ev.createdBy === currentUser.uid;
+    return `
+      <div class="event-card" data-event-id="${ev.id}">
+        <div class="event-card-dot ${dotCls}"></div>
+        <div class="event-card-info">
+          <div class="event-card-title">${ev.title}</div>
+          <div class="event-card-meta">
+            ${ev.startDate || ''}${ev.startTime ? ' · ' + ev.startTime : ''}${ev.endTime ? ' – ' + ev.endTime : ''}
+            ${cfg ? ' · ' + cfg.name : ''}
+          </div>
+          ${ev.description ? `<div class="event-card-desc">${ev.description}</div>` : ''}
+        </div>
+        ${canEdit ? `<button class="text-btn" style="align-self:center" onclick="event.stopPropagation();window._editEv('${ev.id}')">Editar</button>` : ''}
+      </div>`;
+  }).join('');
+}
+
+window._editEv = function(id) { openEditEvent(id); };
+
+// ────────────────────────────────────────────────
+// NOTIFICATIONS LIST
+// ────────────────────────────────────────────────
+function renderNotifsList() {
+  const container = $('notifs-list');
+  if (!container) return;
+
+  if (notifications.length === 0) {
+    container.innerHTML = `<div class="notif-empty"><div class="notif-empty-icon">💌</div><p>Sin notificaciones</p></div>`;
+    return;
+  }
+
+  container.innerHTML = notifications.slice(0, 30).map(n => `
+    <div class="notif-card${n.read ? '' : ' unread'}">
+      <div class="notif-icon-wrap">🔔</div>
+      <div>
+        <div class="notif-card-title">${n.title}</div>
+        <div class="notif-card-body">${n.body}</div>
+        <div class="notif-card-time">${formatRelTime(n.createdAt)}</div>
+      </div>
+    </div>`).join('');
+}
+
+async function markNotifsRead() {
+  const unread = notifications.filter(n => !n.read);
+  for (const n of unread) {
+    await updateDoc(doc(db, 'notifications', n.id), { read: true });
+  }
+}
+
+function updateNotifBadge() {
+  const count = notifications.filter(n => !n.read).length;
+  $('notif-dot').classList.toggle('hidden', count === 0);
+  const badge = $('menu-notif-badge');
+  if (badge) {
+    badge.textContent = count;
+    badge.classList.toggle('hidden', count === 0);
+  }
+}
+
+$('clear-notifs-btn')?.addEventListener('click', async () => {
+  for (const n of notifications) await deleteDoc(doc(db, 'notifications', n.id));
+  showToast('Notificaciones eliminadas');
+});
+
+// ────────────────────────────────────────────────
+// MODAL: BLOCK (recurring schedule)
+// ────────────────────────────────────────────────
+function openAddBlock() {
+  editingBlockId = null;
+  selectedBlockDays = [];
+  selectedBlockType = 'university';
+  $('block-modal-title').textContent = 'Agregar bloque';
+  $('block-title').value  = '';
+  $('block-start').value  = '07:00';
+  $('block-end').value    = '09:00';
+  $('block-from').value   = formatDate(new Date());
+  $('block-to').value     = '2026-12-31';
+  $('block-notes').value  = '';
+  $('block-delete-btn').classList.add('hidden');
+
+  // Reset chips
+  $$('#block-type-chips .type-chip').forEach(c => c.classList.toggle('selected', c.dataset.val === 'university'));
+  $$('#block-days .day-chip').forEach(c => c.classList.remove('selected'));
+
+  $('block-modal').classList.remove('hidden');
+}
+
+function openEditBlock(id) {
+  const sch = schedules.find(s => s.id === id);
+  if (!sch || sch.ownerEmail !== currentUser.email) return;
+
+  editingBlockId = id;
+  selectedBlockDays = [...(sch.days || [])];
+  selectedBlockType = sch.type || 'university';
+
+  $('block-modal-title').textContent = 'Editar bloque';
+  $('block-title').value  = sch.title || '';
+  $('block-start').value  = sch.startTime || '07:00';
+  $('block-end').value    = sch.endTime   || '09:00';
+  $('block-from').value   = sch.startDate || '';
+  $('block-to').value     = sch.endDate   || '';
+  $('block-notes').value  = sch.notes     || '';
+
+  $$('#block-type-chips .type-chip').forEach(c => c.classList.toggle('selected', c.dataset.val === selectedBlockType));
+  $$('#block-days .day-chip').forEach(c => c.classList.toggle('selected', selectedBlockDays.includes(Number(c.dataset.day))));
+
+  $('block-delete-btn').classList.remove('hidden');
+  $('block-modal').classList.remove('hidden');
+}
+
+// Type chips
+$$('#block-type-chips .type-chip').forEach(c => {
+  c.addEventListener('click', () => {
+    selectedBlockType = c.dataset.val;
+    $$('#block-type-chips .type-chip').forEach(x => x.classList.toggle('selected', x === c));
+  });
+});
+
+// Day chips
+$$('#block-days .day-chip').forEach(c => {
+  c.addEventListener('click', () => {
+    const day = Number(c.dataset.day);
+    if (selectedBlockDays.includes(day)) {
+      selectedBlockDays = selectedBlockDays.filter(d => d !== day);
+      c.classList.remove('selected');
+    } else {
+      selectedBlockDays.push(day);
+      c.classList.add('selected');
+    }
+  });
+});
+
+$('close-block-modal').addEventListener('click', () => $('block-modal').classList.add('hidden'));
+$('block-modal').addEventListener('click', e => { if (e.target === $('block-modal')) $('block-modal').classList.add('hidden'); });
+
+$('block-save-btn').addEventListener('click', async () => {
+  const title = $('block-title').value.trim();
+  if (!title) return showToast('Ingresa un nombre', 'error');
+  if (selectedBlockDays.length === 0) return showToast('Selecciona al menos un día', 'error');
+
+  const data = {
+    title,
+    type: selectedBlockType,
+    startTime: $('block-start').value,
+    endTime:   $('block-end').value,
+    days:      selectedBlockDays,
+    startDate: $('block-from').value,
+    endDate:   $('block-to').value,
+    notes:     $('block-notes').value,
+    ownerEmail: currentUser.email,
+    ownerId:    currentUser.uid,
+  };
+
+  try {
+    if (editingBlockId) {
+      await updateDoc(doc(db, 'schedules', editingBlockId), data);
+      showToast('✅ Bloque actualizado');
+    } else {
+      data.createdAt = serverTimestamp();
+      await addDoc(collection(db, 'schedules'), data);
+      showToast('✅ Bloque guardado');
+    }
+    $('block-modal').classList.add('hidden');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+});
+
+$('block-delete-btn').addEventListener('click', async () => {
+  if (!editingBlockId || !confirm('¿Eliminar este bloque?')) return;
+  try {
+    await deleteDoc(doc(db, 'schedules', editingBlockId));
+    $('block-modal').classList.add('hidden');
+    showToast('🗑️ Bloque eliminado');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+});
+
+// ────────────────────────────────────────────────
+// MODAL: EVENT (one-time plan / date)
+// ────────────────────────────────────────────────
+function openAddEvent(prefill = {}) {
+  editingEventId = null;
+  selectedEventType = 'date';
+  $('event-modal-title').textContent = 'Nuevo plan';
+  $('ev-title').value   = '';
+  $('ev-date').value    = prefill.date || formatDate(new Date());
+  $('ev-start').value   = prefill.start || '18:00';
+  $('ev-end').value     = prefill.end   || '20:00';
+  $('ev-desc').value    = '';
+  $('ev-allday').checked  = false;
+  $('ev-notify').checked  = true;
+  $('ev-delete-btn').classList.add('hidden');
+  $$('#ev-type-chips .type-chip').forEach(c => c.classList.toggle('selected', c.dataset.val === 'date'));
+  $('event-modal').classList.remove('hidden');
+}
+
+function openEditEvent(id) {
+  const ev = events.find(e => e.id === id);
+  if (!ev) return;
+  editingEventId = id;
+  selectedEventType = ev.type || 'date';
+  $('event-modal-title').textContent = 'Editar plan';
+  $('ev-title').value   = ev.title || '';
+  $('ev-date').value    = ev.startDate || '';
+  $('ev-start').value   = ev.startTime || '';
+  $('ev-end').value     = ev.endTime   || '';
+  $('ev-desc').value    = ev.description || '';
+  $('ev-allday').checked = ev.allDay || false;
+  $$('#ev-type-chips .type-chip').forEach(c => c.classList.toggle('selected', c.dataset.val === selectedEventType));
+  $('ev-delete-btn').classList.remove('hidden');
+  $('event-modal').classList.remove('hidden');
+}
+
+$$('#ev-type-chips .type-chip').forEach(c => {
+  c.addEventListener('click', () => {
+    selectedEventType = c.dataset.val;
+    $$('#ev-type-chips .type-chip').forEach(x => x.classList.toggle('selected', x === c));
+  });
+});
+
+$('close-event-modal').addEventListener('click', () => $('event-modal').classList.add('hidden'));
+$('event-modal').addEventListener('click', e => { if (e.target === $('event-modal')) $('event-modal').classList.add('hidden'); });
+
+$('add-event-btn').addEventListener('click', openAddEvent);
+
+$('ev-save-btn').addEventListener('click', async () => {
+  const title = $('ev-title').value.trim();
+  if (!title) return showToast('Ingresa un título', 'error');
+
+  const data = {
+    title, type: selectedEventType,
+    startDate: $('ev-date').value,
+    endDate:   $('ev-date').value,
+    startTime: $('ev-start').value,
+    endTime:   $('ev-end').value,
+    allDay:    $('ev-allday').checked,
+    description: $('ev-desc').value,
+    ownerEmail: currentUser.email,
+    createdBy:  currentUser.uid,
+    sharedWith: ALLOWED_EMAILS,
+    updatedAt:  serverTimestamp()
+  };
+
+  try {
+    if (editingEventId) {
+      await updateDoc(doc(db, 'events', editingEventId), data);
+      showToast('✅ Plan actualizado');
+    } else {
+      data.createdAt = serverTimestamp();
+      await addDoc(collection(db, 'events'), data);
+      if ($('ev-notify').checked) await notifyPartner(title, data.startDate, data.startTime);
+      showToast('✅ Plan creado 💜');
+    }
+    $('event-modal').classList.add('hidden');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+});
+
+$('ev-delete-btn').addEventListener('click', async () => {
+  if (!editingEventId || !confirm('¿Eliminar este plan?')) return;
+  await deleteDoc(doc(db, 'events', editingEventId));
+  $('event-modal').classList.add('hidden');
+  showToast('🗑️ Plan eliminado');
+});
+
+// ────────────────────────────────────────────────
+// FAB
+// ────────────────────────────────────────────────
+$('fab-add').addEventListener('click', () => {
+  if (currentSection === 'together' || currentSection === 'my-schedule') {
+    openAddBlock();
+  }
+});
+
+$('add-block-btn')?.addEventListener('click', openAddBlock);
+$('notif-btn').addEventListener('click', () => {
+  setSection('notifications');
+  closeMenu();
+});
+
+// ────────────────────────────────────────────────
+// NOTIFICATIONS HELPER
+// ────────────────────────────────────────────────
+async function notifyPartner(title, date, time) {
+  const partnerEmail = ALLOWED_EMAILS.find(e => e !== currentUser.email);
+  const snap = await getDocs(query(collection(db, 'users'), where('email', '==', partnerEmail)));
+  if (snap.empty) return;
+  const partner = snap.docs[0].data();
+  const myName  = USER_CONFIG[currentUser.email]?.name || 'Tu pareja';
+  await addDoc(collection(db, 'notifications'), {
+    recipientId: partner.uid,
+    title: `${myName} agregó un plan`,
+    body: `"${title}" el ${date}${time ? ' a las ' + time : ''}`,
+    type: 'new_event', read: false,
+    createdAt: serverTimestamp()
+  });
+}
+
+// ────────────────────────────────────────────────
+// TOPBAR / LABELS
+// ────────────────────────────────────────────────
+function updateTopbarLabel() {
+  const MONTHS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+                  'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const el = $('topbar-period');
+  if (currentSection === 'together') {
+    const s = state.together.selectedDay;
+    el.textContent = `${s.getDate()} ${MONTHS[s.getMonth()]}`;
+  } else if (currentSection === 'my-schedule') {
+    const s = state.my.selectedDay;
+    el.textContent = `${s.getDate()} ${MONTHS[s.getMonth()]}`;
+  } else if (currentSection === 'events') {
+    el.textContent = 'Planes y citas';
+  } else if (currentSection === 'notifications') {
+    el.textContent = 'Notificaciones';
+  }
+}
+
+function updateWeekLabel(elId, weekStart) {
+  const MONTHS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const end = addDays(weekStart, 6);
+  const el  = $(elId);
+  if (!el) return;
+  if (weekStart.getMonth() === end.getMonth()) {
+    el.textContent = `${weekStart.getDate()} – ${end.getDate()} ${MONTHS[end.getMonth()]} ${end.getFullYear()}`;
+  } else {
+    el.textContent = `${weekStart.getDate()} ${MONTHS[weekStart.getMonth()]} – ${end.getDate()} ${MONTHS[end.getMonth()]}`;
+  }
+}
+
+function renderCurrentGrids() {
+  if (currentSection === 'together') renderTogetherGrid();
+  else if (currentSection === 'my-schedule') renderMyGrid();
+}
+
+// ────────────────────────────────────────────────
+// TOAST
+// ────────────────────────────────────────────────
 function showToast(msg, type = 'success') {
-  const container = $('toast-container');
+  const wrap  = $('toast-wrap');
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
   toast.textContent = msg;
-  container.appendChild(toast);
+  wrap.appendChild(toast);
   setTimeout(() => {
-    toast.style.animation = 'toastOut 0.3s ease forwards';
-    setTimeout(() => toast.remove(), 300);
-  }, 3500);
+    toast.style.animation = 'toastOut 0.25s ease forwards';
+    setTimeout(() => toast.remove(), 250);
+  }, 3000);
 }
 
-// ── DATE UTILS ──
+window.showToast = showToast;
+
+// ────────────────────────────────────────────────
+// DATE UTILS
+// ────────────────────────────────────────────────
 function getWeekStart(date) {
   const d = new Date(date);
-  d.setDate(d.getDate() - d.getDay());
-  d.setHours(0,0,0,0);
+  const day = d.getDay();
+  // Week starts Monday
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  d.setHours(0, 0, 0, 0);
   return d;
 }
 
@@ -875,22 +960,10 @@ function addDays(date, n) {
   return d;
 }
 
-function addMonths(date, n) {
-  const d = new Date(date);
-  d.setMonth(d.getMonth() + n);
-  return d;
-}
-
-function addYears(date, n) {
-  const d = new Date(date);
-  d.setFullYear(d.getFullYear() + n);
-  return d;
-}
-
 function isSameDay(a, b) {
   return a.getFullYear() === b.getFullYear() &&
-         a.getMonth() === b.getMonth() &&
-         a.getDate() === b.getDate();
+         a.getMonth()    === b.getMonth()    &&
+         a.getDate()     === b.getDate();
 }
 
 function formatDate(date) {
@@ -898,8 +971,8 @@ function formatDate(date) {
 }
 
 function parseDate(str) {
-  const [y,m,d] = str.split('-').map(Number);
-  return new Date(y, m-1, d);
+  const [y, m, d] = str.split('-').map(Number);
+  return new Date(y, m - 1, d);
 }
 
 function timeToMins(time) {
@@ -907,15 +980,18 @@ function timeToMins(time) {
   return h * 60 + (m || 0);
 }
 
-function formatRelativeTime(ts) {
+function minsToTime(mins) {
+  const h = Math.floor(mins / 60) % 24;
+  const m = mins % 60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+}
+
+function formatRelTime(ts) {
   if (!ts) return '';
   const date = ts.toDate ? ts.toDate() : new Date(ts);
   const diff = (Date.now() - date) / 1000;
-  if (diff < 60) return 'Hace un momento';
-  if (diff < 3600) return `Hace ${Math.floor(diff/60)} min`;
-  if (diff < 86400) return `Hace ${Math.floor(diff/3600)} h`;
+  if (diff < 60)    return 'Hace un momento';
+  if (diff < 3600)  return `Hace ${Math.floor(diff / 60)} min`;
+  if (diff < 86400) return `Hace ${Math.floor(diff / 3600)} h`;
   return date.toLocaleDateString('es');
 }
-
-window.showToast = showToast;
-window.openEventModal = openEventModal;

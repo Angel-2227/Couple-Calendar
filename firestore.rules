@@ -1,0 +1,45 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAllowed() {
+      return request.auth != null &&
+        request.auth.token.email in [
+          'juanrubio2277@gmail.com',
+          'greisisayoja@gmail.com'
+        ];
+    }
+
+    // User profiles
+    match /users/{userId} {
+      allow read: if isAllowed();
+      allow write: if isAllowed() && request.auth.uid == userId;
+    }
+
+    // Recurring schedule blocks
+    match /schedules/{scheduleId} {
+      allow read: if isAllowed();
+      allow create: if isAllowed() && request.resource.data.ownerId == request.auth.uid;
+      allow update, delete: if isAllowed() && resource.data.ownerId == request.auth.uid;
+    }
+
+    // One-time events / plans
+    match /events/{eventId} {
+      allow read: if isAllowed();
+      allow create: if isAllowed() && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isAllowed();
+      allow delete: if isAllowed() && resource.data.createdBy == request.auth.uid;
+    }
+
+    // Notifications
+    match /notifications/{notifId} {
+      allow read, update, delete: if isAllowed() && resource.data.recipientId == request.auth.uid;
+      allow create: if isAllowed();
+    }
+
+    // Shared couple config (future use)
+    match /coupleConfig/main {
+      allow read, write: if isAllowed();
+    }
+  }
+}
