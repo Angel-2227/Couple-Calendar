@@ -1,5 +1,5 @@
 import { auth, db, provider, signInWithPopup, signOut, onAuthStateChanged,
-  collection, doc, addDoc, updateDoc, deleteDoc, getDoc, getDocs,
+  collection, doc, addDoc, updateDoc, deleteDoc, setDoc, getDoc, getDocs,
   query, where, orderBy, onSnapshot, serverTimestamp, Timestamp,
   ALLOWED_EMAILS, USER_CONFIG } from './firebase-config.js';
 
@@ -53,21 +53,14 @@ onAuthStateChanged(auth, async user => {
 
 async function saveUserProfile(user) {
   const cfg = USER_CONFIG[user.email];
-  await updateDoc(doc(db, 'users', user.uid), {
+  // setDoc con merge:true crea el documento si no existe, o lo actualiza si ya existe
+  await setDoc(doc(db, 'users', user.uid), {
     uid: user.uid,
     email: user.email,
     name: cfg?.name || user.displayName,
-    photoURL: user.photoURL,
+    photoURL: user.photoURL || '',
     lastSeen: serverTimestamp()
-  }).catch(() =>
-    addDoc(collection(db, 'users'), {
-      uid: user.uid,
-      email: user.email,
-      name: cfg?.name || user.displayName,
-      photoURL: user.photoURL,
-      lastSeen: serverTimestamp()
-    })
-  );
+  }, { merge: true });
 }
 
 // ── SHOW/HIDE SCREENS ──
